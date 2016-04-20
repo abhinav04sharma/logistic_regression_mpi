@@ -3,16 +3,23 @@
 
 #include <iostream>
 #include <sstream>
-#include <iterator>
+
 #include <string>
 #include <vector>
+#include <unordered_set>
+#include <unordered_map>
+#include <iterator>
+
 #include <algorithm>
 #include <random>
 #include <chrono>
+
 #include <cassert>
 
 
-void split(std::vector<std::string> &splits, std::string str, const std::string delim)
+void split(std::vector<std::string> &splits,
+           std::string str,
+           const std::string delim)
 {
     size_t pos = 0;
     std::string token;
@@ -23,8 +30,11 @@ void split(std::vector<std::string> &splits, std::string str, const std::string 
     }
 }
 
-bool read_training_data(const char *file_name, const char *delim, std::vector<std::vector<double> > &training,
-        std::vector<std::vector<double> > &validation)
+bool read_training_data(const char *file_name,
+                        const char *delim,
+                        std::vector<std::vector<double> > &training,
+                        std::vector<std::vector<double> > &validation,
+                        std::unordered_set<double> &label_set)
 {
     FILE *fp = fopen(file_name, "r");
     char *line = NULL;
@@ -44,6 +54,7 @@ bool read_training_data(const char *file_name, const char *delim, std::vector<st
         for (size_t i = 0; i < splits.size(); ++i) {
             feat.push_back(std::stod(splits[i], NULL));
         }
+        label_set.insert(feat[0]);
 
         // case: 80% training, 20% validation
         if (count >= 8) validation.push_back(feat);
@@ -61,7 +72,8 @@ bool read_training_data(const char *file_name, const char *delim, std::vector<st
     return true;
 }
 
-double hypothesis(const std::vector<double> &weights, const std::vector<double> &feats)
+double hypothesis(const std::vector<double> &weights,
+                  const std::vector<double> &feats)
 {
     double result = weights[0];
     for (size_t i = 1; i < feats.size(); ++i) {
@@ -72,16 +84,52 @@ double hypothesis(const std::vector<double> &weights, const std::vector<double> 
     return sigmoid;
 }
 
-double cost(std::vector<std::vector<double> >::const_iterator feats, const std::vector<double> &weights, 
-        const size_t batch_size, const size_t dimension)
+double predict(const std::unordered_map<double, std::vector<double> > &model,
+               const std::unordered_set<double> &label_set,
+               const std::vector<double> &feats)
+{
+    // binary classification
+    if (model.size() == 1) {
+        std::unordered_set<double>::const_iterator lit = label_set.begin();
+        const double label1 = *(lit++);
+        const double label2 = *lit;
+        const std::unordered_map<double, std::vector<double> >::const_iterator mit = model.find(label1);
+        assert(mit != model.end());
+
+        return hypothesis(mit->second, feats) > 0.5 ? label1 : label2;
+    }
+
+    double max_hyp = -1;
+    double max_label;
+    for (std::unordered_map<double, std::vector<double> >::const_iterator it = model.begin();
+         it != model.end();
+         ++it)
+    {
+        double hyp = hypothesis(it->second, feats);
+        if (hyp > max_hyp) {
+            max_hyp = hyp;
+            max_label = it->first;
+        }
+    }
+    assert(max_hyp != -1);
+
+    return max_label;
+}
+
+double cost(std::vector<std::vector<double> >::const_iterator feats,
+            const std::vector<double> &weights,
+            const size_t batch_size,
+            const size_t dimension,
+            const double true_label)
 {
     double cost = 0;
     for (size_t i = 0; i < batch_size; ++i) {
+        double label = (*feats)[0] == true_label ? 1 : 0;
         // TODO: can this be simplified?
         if (dimension == 0) 
-            cost += (hypothesis(weights, *feats) - (*feats)[0]);
+            cost += (hypothesis(weights, *feats) - label);
         else
-            cost += (hypothesis(weights, *feats) - (*feats)[0]) * (*feats)[dimension];
+            cost += (hypothesis(weights, *feats) - label) * (*feats)[dimension];
         ++feats;
     }
     return cost;
@@ -90,8 +138,12 @@ double cost(std::vector<std::vector<double> >::const_iterator feats, const std::
 // if batch_size is equal to training data, it performs batch gradient decent
 // if batch_size is equal to 1, it performs stochastic gradient decent
 // if batch_size is in between, it performs mini-batch gradient decent
-std::vector<double> logistic_regression(std::vector<std::vector<double> > &feats, const double learning_rate,
-        const double reg_param, const size_t batch_size, int data_passes)
+std::vector<double> binary_logistic_regression(std::vector<std::vector<double> > &feats,
+                                               const double learning_rate,
+                                               const double reg_param,
+                                               const size_t batch_size,
+                                               int data_passes,
+                                               const double true_label = 1)
 {
     std::vector<double> weights(feats[0].size(), 0);
     size_t count = 0;
@@ -109,7 +161,7 @@ std::vector<double> logistic_regression(std::vector<std::vector<double> > &feats
             for (size_t j = 0; j < temp_weights.size(); ++j) {
                 // calculate cost for the batch
                 const size_t num_examples = std::min(batch_size, (size_t) (feats.end() - feats_batch));
-                double cst = cost(feats_batch, weights, num_examples, j);
+                double cst = cost(feats_batch, weights, num_examples, j, true_label);
 
                 // regularization is not applied to the zeroth weight
                 // TODO: can this be simplified?
@@ -136,7 +188,6 @@ std::vector<double> logistic_regression(std::vector<std::vector<double> > &feats
         if (!is_batch_gradient_decent) {
             unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
             shuffle(feats.begin(), feats.end(), std::default_random_engine(seed));
-            //random_shuffle(feats.begin(), feats.end());
         }
         --data_passes;
     }
@@ -144,23 +195,65 @@ std::vector<double> logistic_regression(std::vector<std::vector<double> > &feats
     return weights;
 }
 
-double fscore(std::vector<std::vector<double> > &validation, std::vector<double> weights)
+void logistic_regression(std::vector<std::vector<double> > &feats, 
+                         const std::unordered_set<double> &label_set,
+                         std::unordered_map<double, std::vector<double> > &model,
+                         const double learning_rate,
+                         const double reg_param,
+                         const size_t batch_size,
+                         int data_passes)
 {
-    size_t tp = 0, fp = 0, fn = 0;
-    for (size_t i = 0; i < validation.size(); ++i) {
-        double hyp = hypothesis(weights, validation[i]);
-        if (hyp > 0.5) {
-            if (validation[i][0] == 1) ++tp;
-            else ++fp;
-        } else {
-            if (validation[i][0] == 1) ++fn;
-        }
+    // binary classification problem
+    if (label_set.size() == 2) {
+        const std::unordered_set<double>::const_iterator label_itr = label_set.begin();
+        const double label = *label_itr;
+        model[label] = binary_logistic_regression(feats, learning_rate, reg_param, batch_size, data_passes, label);
+        return;
     }
 
-    double precision = (double) tp / (tp + fp);
-    double recall = (double) tp / (tp + fn);
+    for (std::unordered_set<double>::const_iterator label_itr = label_set.begin();
+         label_itr != label_set.end();
+         ++label_itr)
+    {
+        const double label = *label_itr;
+        std::cout << std::endl << "Gradient decent for label: " << label << std::endl;
+        model[label] = binary_logistic_regression(feats, learning_rate, reg_param, batch_size, data_passes, label);
+    }
+}
 
-    return (2 * precision * recall) / (precision + recall);
+std::unordered_map<double, double> fscore(const std::vector<std::vector<double> > &validation,
+                                          const std::unordered_set<double> &label_set,
+                                          const std::unordered_map<double, std::vector<double> > &model)
+{
+    std::unordered_map<double, double> ret(model.size());
+    std::unordered_map<double, std::unordered_map<double, double> > confusion_matrix;
+
+    for (size_t i = 0; i < validation.size(); ++i) {
+        double pred_label = predict(model, label_set, validation[i]);
+        double true_label = validation[i][0];
+        confusion_matrix[true_label][pred_label] += 1;
+    }
+
+    for (std::unordered_map<double, std::vector<double> >::const_iterator it = model.begin();
+         it != model.end();
+         ++it)
+    {
+        double label = it->first;
+        double tp = confusion_matrix[label][label];
+        double total_gold = 0;
+        double total_pred = 0;
+        for (std::unordered_set<double>::const_iterator lit = label_set.begin(); lit != label_set.end(); ++lit) {
+            total_gold += confusion_matrix[label][*lit];
+            total_pred += confusion_matrix[*lit][label];
+        }
+
+        double precision = tp / total_pred;
+        double recall = tp / total_gold;
+
+        ret[label] = (2 * precision * recall) / (precision + recall);
+    }
+
+    return ret;
 }
 
 void usage() {
@@ -168,7 +261,8 @@ void usage() {
         "[<data passes (-1 for convergence)> <batch size>]" << std::endl;
 }
 
-int main(int argc, char * argv[])
+int main(int argc,
+         char * argv[])
 {
     if (argc < 5 || std::string(argv[1]) == std::string("-h")) {
         usage();
@@ -178,34 +272,49 @@ int main(int argc, char * argv[])
     std::vector<std::vector<double> > training; // TODO: can be optimized, we can count the number of feats and allocate accordingly
     std::vector<std::vector<double> > validation; // TODO: can be optimized, we can count the number of feats and allocate accordingly
 
+    std::unordered_set<double> label_set;
+    std::unordered_map<double, std::vector<double> > model;
+
     char *training_file = argv[1];
     char *delimiter = argv[2];
 
     // read training data
-    read_training_data(training_file, delimiter, training, validation);
-    std::cout << "Done reading training data ... " << std::endl;
+    std::cout << "Reading training data ... ";
+    read_training_data(training_file, delimiter, training, validation, label_set);
+    std::cout << "[Done]" << std::endl;
 
     double learning_rate = std::stod(std::string(argv[3]));
     double reg_param = std::stod(std::string(argv[4]));
     int data_passes = -1;
     size_t batch_size = training.size();
 
-    if (argc == 6)
+    if (argc >= 6)
         data_passes = std::stoi(std::string(argv[5]));
-    if (argc == 7)
+    if (argc >= 7)
         batch_size = std::stoul(std::string(argv[6]));
 
-    std::cout 
+    std::cout << std::endl
         << "***Info***" << std::endl
         << "Training Data File: " << training_file << std::endl
         << "Learning Rate: " << learning_rate << std::endl
         << "Regularization Parameter: " << reg_param << std::endl
         << "Data Passes: " << data_passes << std::endl
-        << "Batch Size: " << batch_size << std::endl << std::endl;
+        << "Batch Size: " << batch_size << std::endl
+        << "Num Labels: " << label_set.size() << std::endl
+        << "**********" << std::endl;
+
 
     // logistic regression
-    std::vector<double> weights = logistic_regression(training, learning_rate, reg_param, batch_size, data_passes);
+    logistic_regression(training, label_set, model, learning_rate, reg_param, batch_size, data_passes);
 
-    std::cout << "F-Score: " << fscore(validation, weights) << std::endl;
+    // print the f-score(s)
+    const std::unordered_map<double, double> fsc = fscore(validation, label_set, model);
+    std::cout << std::endl << std::endl;
+    std::cout << "F-Score(s):" << std::endl;
+    std::cout << "Label\tScore" << std::endl;
+    for (std::unordered_map<double, double>::const_iterator it = fsc.begin(); it != fsc.end(); ++it) {
+        std::cout << it->first << "\t" << it->second << std::endl;
+    }
+
     return 0;
 }
