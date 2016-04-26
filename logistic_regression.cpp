@@ -10,6 +10,8 @@
 #include <unordered_map>
 #include <iterator>
 
+#include <omp.h>
+
 #include <algorithm>
 #include <random>
 #include <chrono>
@@ -158,6 +160,7 @@ std::vector<double> binary_logistic_regression(std::vector<std::vector<double> >
 
         // for each batch of data
         while (feats_batch < feats.end()) {
+#pragma omp parallel for
             for (size_t j = 0; j < temp_weights.size(); ++j) {
                 // calculate cost for the batch
                 const size_t num_examples = std::min(batch_size, (size_t) (feats.end() - feats_batch));
@@ -211,13 +214,10 @@ void logistic_regression(std::vector<std::vector<double> > &feats,
         return;
     }
 
-    for (std::unordered_set<double>::const_iterator label_itr = label_set.begin();
-         label_itr != label_set.end();
-         ++label_itr)
-    {
-        const double label = *label_itr;
-        std::cout << std::endl << "Gradient decent for label: " << label << std::endl;
-        model[label] = binary_logistic_regression(feats, learning_rate, reg_param, batch_size, data_passes, label);
+    std::vector<double> labels(label_set.begin(), label_set.end());
+#pragma omp parallel for
+    for (size_t i = 0; i < labels.size(); ++i) {
+        model[labels[i]] = binary_logistic_regression(feats, learning_rate, reg_param, batch_size, data_passes, labels[i]);
     }
 }
 
@@ -228,6 +228,7 @@ std::unordered_map<double, double> fscore(const std::vector<std::vector<double> 
     std::unordered_map<double, double> ret(model.size());
     std::unordered_map<double, std::unordered_map<double, double> > confusion_matrix;
 
+#pragma omp parallel for
     for (size_t i = 0; i < validation.size(); ++i) {
         double pred_label = predict(model, label_set, validation[i]);
         double true_label = validation[i][0];
