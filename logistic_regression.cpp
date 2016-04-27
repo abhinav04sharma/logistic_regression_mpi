@@ -26,9 +26,18 @@ double reg_param;
 
 
 enum TAGS {
+    DATA_PASSES,
+
     TRUE_LABEL,
+    NUM_LABELS,
+
     WEIGHTS,
     WEIGHTS_SIZE,
+
+    SPLIT_WEIGHTS,
+    SPLIT_WEIGHTS_SIZE,
+
+    NUM_BATCHES,
     BATCH,
     BATCH_SIZE
 };
@@ -166,8 +175,16 @@ std::vector<double> binary_logistic_regression(std::vector<std::vector<double> >
     size_t count = 0;
     bool is_batch_gradient_decent = batch_size == feats.size();
 
+    size_t weights_size = weights.size();
+    size_t num_workers = std::min(weights_size, (size_t)numprocs - 1);
+
+    // send true label to workers
+    for (size_t i = 1; i <= num_workers; ++i) {
+        MPI_Send(&true_label, sizeof(true_label), MPI_BYTE, i, TRUE_LABEL, MPI_COMM_WORLD);
+    }
+
     // gradient decent
-    while(data_passes != 0) {
+    while (data_passes != 0) {
         std::cout << "Iteration: " << count++ << std::endl;
 
         std::vector<std::vector<double> >::const_iterator feats_batch = feats.begin();
@@ -175,24 +192,19 @@ std::vector<double> binary_logistic_regression(std::vector<std::vector<double> >
 
         // for each batch of data
         while (feats_batch < feats.end()) {
-            size_t size = weights.size();
-            size_t num_workers = std::min(size, (size_t)numprocs - 1);
+            size_t num_examples = std::min(batch_size, (size_t) (feats.end() - feats_batch));
 
-            // send true label
-            MPI_Send(&true_label, sizeof(true_label), MPI_BYTE, 0, TRUE_LABEL, MPI_COMM_WORLD);
-
-            // send weights to workers
+            // send weights and batch to workers
             for (size_t i = 1; i <= num_workers; ++i) {
-                MPI_Send(&size, sizeof(size), MPI_BYTE, i, WEIGHTS_SIZE, MPI_COMM_WORLD);
-                MPI_Send(&weights[0], size, MPI_DOUBLE, i, WEIGHTS, MPI_COMM_WORLD);
-            }
+                // send weights
+                MPI_Send(&weights_size, sizeof(weights_size), MPI_BYTE, i, WEIGHTS_SIZE, MPI_COMM_WORLD);
+                MPI_Send(&weights[0], weights_size, MPI_DOUBLE, i, WEIGHTS, MPI_COMM_WORLD);
 
-            // send batch to workers
-            for (size_t i = 1; i <= num_workers; ++i) {
-                size_t num_examples = std::min(batch_size, (size_t) (feats.end() - feats_batch));
+                // send batch to workers
                 MPI_Send(&num_examples, sizeof(num_examples), MPI_BYTE, i, BATCH_SIZE, MPI_COMM_WORLD);
-                for (size_t i = 0; i < num_examples; ++i) {
-                    MPI_Send(&feats[i][0], feats[i].size(), MPI_DOUBLE, i, BATCH, MPI_COMM_WORLD);
+                for (size_t j = 0; j < num_examples; ++j) {
+                    std::vector<double> &feat = *(feats_batch + j);
+                    MPI_Send(&feat[0], feat.size(), MPI_DOUBLE, i, BATCH, MPI_COMM_WORLD);
                 }
             }
 
@@ -200,15 +212,19 @@ std::vector<double> binary_logistic_regression(std::vector<std::vector<double> >
             size_t cursor = 0;
             for (size_t i = 1; i <= num_workers; ++i) {
                 MPI_Status status;
-                MPI_Recv(&size, sizeof(size), MPI_BYTE, i, WEIGHTS_SIZE, MPI_COMM_WORLD, &status);
-                MPI_Recv(&weights[cursor], size, MPI_DOUBLE, i, WEIGHTS, MPI_COMM_WORLD, &status);
-                cursor += size;
+                size_t split_weights_size;
+                MPI_Recv(&split_weights_size, sizeof(split_weights_size), MPI_BYTE, i, SPLIT_WEIGHTS_SIZE, MPI_COMM_WORLD, &status);
+                MPI_Recv(&temp_weights[cursor], split_weights_size, MPI_DOUBLE, i, SPLIT_WEIGHTS, MPI_COMM_WORLD, &status);
+                cursor += split_weights_size;
             }
-            
+
+            assert(cursor == weights.size());
+
             // advance by batch size;
             feats_batch += batch_size;
 
             // convergence
+            // TODO: workers will hang
             if (temp_weights == weights) {
                 return weights;
             }
@@ -235,6 +251,18 @@ void logistic_regression(std::vector<std::vector<double> > &feats,
                          const size_t batch_size,
                          int data_passes)
 {
+    // send number of labels, batches, data passes to workers
+    size_t weights_size = feats[0].size();
+    size_t num_labels = label_set.size() == 2 ? 1 : label_set.size();
+    size_t num_batches = feats.size() / batch_size;
+    size_t num_workers = std::min(weights_size, (size_t)numprocs - 1);
+
+    for (size_t i = 1; i <= num_workers; ++i) {
+        MPI_Send(&num_labels, sizeof(num_labels), MPI_BYTE, i, NUM_LABELS, MPI_COMM_WORLD);
+        MPI_Send(&num_batches, sizeof(num_batches), MPI_BYTE, i, NUM_BATCHES, MPI_COMM_WORLD);
+        MPI_Send(&data_passes, sizeof(data_passes), MPI_BYTE, i, DATA_PASSES, MPI_COMM_WORLD);
+    }
+
     // binary classification problem
     if (label_set.size() == 2) {
         const std::unordered_set<double>::const_iterator label_itr = label_set.begin();
@@ -353,54 +381,83 @@ int worker()
 {
     MPI_Status status;
 
-    double true_label;
-    // receive true label
-    MPI_Recv(&true_label, sizeof(true_label), MPI_BYTE, 0, TRUE_LABEL, MPI_COMM_WORLD, &status);
+    // receive number of labels
+    size_t num_labels;
+    MPI_Recv(&num_labels, sizeof(num_labels), MPI_BYTE, 0, NUM_LABELS, MPI_COMM_WORLD, &status);
 
-    // receive weights from the parameter server
-    size_t size;
-    MPI_Recv(&size, sizeof(size), MPI_BYTE, 0, WEIGHTS_SIZE, MPI_COMM_WORLD, &status);
-    std::vector<double> weights(size);
-    MPI_Recv(&weights[0], size, MPI_DOUBLE, 0, WEIGHTS, MPI_COMM_WORLD, &status);
+    // receive number of batches
+    size_t num_batches;
+    MPI_Recv(&num_batches, sizeof(num_batches), MPI_BYTE, 0, NUM_BATCHES, MPI_COMM_WORLD, &status);
 
-    // receive batch of features from the parameter server
-    // TODO: convert to single receive or avoid sending alltogether using files directly
-    size_t batch_size;
-    MPI_Recv(&batch_size, sizeof(batch_size), MPI_BYTE, 0, BATCH_SIZE, MPI_COMM_WORLD, &status);
-    std::vector<std::vector<double> > feats_batch(batch_size, std::vector<double>(size));
-    for (size_t i = 0; i < batch_size; ++i) {
-        MPI_Recv(&feats_batch[i][0], size, MPI_DOUBLE, 0, BATCH, MPI_COMM_WORLD, &status);
-    }
+    // receive data passes
+    int data_passes;
+    MPI_Recv(&data_passes, sizeof(data_passes), MPI_BYTE, 0, DATA_PASSES, MPI_COMM_WORLD, &status);
 
-    // calculate range of dimension for this worker
-    const size_t num_splits = std::min(weights.size(), (size_t) numprocs - 1);
-    const size_t split_size = weights.size() / num_splits;
+    while (num_labels) {
+        // receive true label
+        double true_label;
+        MPI_Recv(&true_label, sizeof(true_label), MPI_BYTE, 0, TRUE_LABEL, MPI_COMM_WORLD, &status);
+        std::cout << "Worker(" << rank << ") " << "True Label: " << true_label << std::endl;
 
-    const size_t start = (rank - 1) * num_splits;
-    const size_t end = std::min(weights.size(), start + num_splits);
+        size_t count_data_passes = 0;
+        while (count_data_passes < data_passes) {
 
-    // make a copy of weights
-    std::vector<double> temp_weights(weights.begin() + start, weights.begin() + end);
+            size_t count_batches = 0;
+            while (count_batches < num_batches) {
+                // receive weights from the parameter server
+                size_t weights_size;
+                MPI_Recv(&weights_size, sizeof(weights_size), MPI_BYTE, 0, WEIGHTS_SIZE, MPI_COMM_WORLD, &status);
+                std::vector<double> weights(weights_size);
+                MPI_Recv(&weights[0], weights_size, MPI_DOUBLE, 0, WEIGHTS, MPI_COMM_WORLD, &status);
 
-    // calculate weights for the range
-    for (size_t j = 0; j < temp_weights.size(); ++j) {
-        // calculate cost for the batch
-        double cst = cost(feats_batch.begin(), weights, batch_size, j + start, true_label);
+                // receive batch of features from the parameter server
+                // TODO: convert to single receive or avoid sending alltogether using files directly
+                size_t batch_size;
+                size_t feats_size = weights_size;
+                MPI_Recv(&batch_size, sizeof(batch_size), MPI_BYTE, 0, BATCH_SIZE, MPI_COMM_WORLD, &status);
+                std::vector<std::vector<double> > feats_batch(batch_size, std::vector<double>(feats_size));
+                for (size_t i = 0; i < batch_size; ++i) {
+                    MPI_Recv(&feats_batch[i][0], feats_size, MPI_DOUBLE, 0, BATCH, MPI_COMM_WORLD, &status);
+                }
 
-        // regularization is not applied to the zeroth weight
-        // TODO: can this be simplified?
-        if (j + start > 0) {
-            temp_weights[j] = weights[j + start] * (1 - learning_rate * reg_param / batch_size) - learning_rate / batch_size * cst;
-        } else {
-            temp_weights[j] = weights[j + start] - learning_rate / batch_size * cst;
+                // calculate range of dimension for this worker
+                const size_t num_splits = std::min(weights.size(), (size_t) numprocs - 1);
+                const size_t split_size = weights.size() / num_splits;
+
+                const size_t start = (rank - 1) * split_size;
+                const size_t end = std::min(weights.size(), start + split_size);
+
+                //std::cout << "Worker(" << rank << ") " << "Range: " << start << " - " << end << std::endl;
+
+                // make a copy of weights
+                std::vector<double> temp_weights(weights.begin() + start, weights.begin() + end);
+
+                // calculate weights for the range
+                for (size_t j = 0; j < temp_weights.size(); ++j) {
+                    // calculate cost for the batch
+                    double cst = cost(feats_batch.begin(), weights, batch_size, j + start, true_label);
+
+                    // regularization is not applied to the zeroth weight
+                    // TODO: can this be simplified?
+                    if (j + start > 0) {
+                        temp_weights[j] = weights[j + start] * (1 - learning_rate * reg_param / batch_size) - learning_rate / batch_size * cst;
+                    } else {
+                        temp_weights[j] = weights[j + start] - learning_rate / batch_size * cst;
+                    }
+                }
+
+
+                // send the updated weights for the range
+                size_t temp_weights_size = temp_weights.size();
+                MPI_Send(&temp_weights_size, sizeof(temp_weights_size), MPI_BYTE, 0, SPLIT_WEIGHTS_SIZE, MPI_COMM_WORLD);
+                MPI_Send(&temp_weights[0], temp_weights_size, MPI_DOUBLE, 0, SPLIT_WEIGHTS, MPI_COMM_WORLD);
+
+                ++count_batches;
+            }
+            ++count_data_passes;
         }
+        --num_labels;
     }
-
-    // send the updated weights for the range
-    size_t temp_weights_size = temp_weights.size();
-    MPI_Send(&temp_weights_size, sizeof(temp_weights_size), MPI_BYTE, 0, WEIGHTS_SIZE, MPI_COMM_WORLD);
-    MPI_Send(&temp_weights[0], temp_weights_size, MPI_DOUBLE, 0, WEIGHTS, MPI_COMM_WORLD);
-
     return 0;
 }
 
