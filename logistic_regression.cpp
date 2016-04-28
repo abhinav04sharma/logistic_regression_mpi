@@ -5,6 +5,7 @@
 #include <sstream>
 
 #include <string>
+#include <string.h>
 #include <vector>
 #include <unordered_set>
 #include <unordered_map>
@@ -12,26 +13,23 @@
 
 #include <algorithm>
 #include <random>
-#include <chrono>
 
 #include <cassert>
 
 
 void split(std::vector<std::string> &splits,
-           std::string str,
-           const std::string delim)
+           const std::string &str,
+           const char delim)
 {
-    size_t pos = 0;
-    std::string token;
-    while ((pos = str.find(delim)) != std::string::npos) {
-        token = str.substr(0, pos);
-        splits.push_back(token);
-        str.erase(0, pos + delim.length());
+    std::stringstream ss(str);
+    std::string item;
+    while (std::getline(ss, item, delim)) {
+        splits.push_back(item);
     }
 }
 
 bool read_training_data(const char *file_name,
-                        const char *delim,
+                        const char delim,
                         std::vector<std::vector<double> > &training,
                         std::vector<std::vector<double> > &validation,
                         std::unordered_set<double> &label_set)
@@ -47,7 +45,7 @@ bool read_training_data(const char *file_name,
     size_t count = 0;
     while ((read = getline(&line, &len, fp)) != -1) {
         std::vector<std::string> splits;
-        split(splits, std::string(line), std::string(delim));
+        split(splits, std::string(line), delim);
 
         // extract features
         std::vector<double> feat;
@@ -100,7 +98,7 @@ double predict(const std::unordered_map<double, std::vector<double> > &model,
     }
 
     double max_hyp = -1;
-    double max_label;
+    double max_label = -1;
     for (std::unordered_map<double, std::vector<double> >::const_iterator it = model.begin();
          it != model.end();
          ++it)
@@ -112,6 +110,7 @@ double predict(const std::unordered_map<double, std::vector<double> > &model,
         }
     }
     assert(max_hyp != -1);
+    assert(max_label != -1);
 
     return max_label;
 }
@@ -143,7 +142,7 @@ std::vector<double> binary_logistic_regression(std::vector<std::vector<double> >
                                                const double reg_param,
                                                const size_t batch_size,
                                                int data_passes,
-                                               const double true_label = 1)
+                                               double true_label = 1)
 {
     std::vector<double> weights(feats[0].size(), 0);
     size_t count = 0;
@@ -186,8 +185,7 @@ std::vector<double> binary_logistic_regression(std::vector<std::vector<double> >
 
         // shuffle the data
         if (!is_batch_gradient_decent) {
-            unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
-            shuffle(feats.begin(), feats.end(), std::default_random_engine(seed));
+            random_shuffle(feats.begin(), feats.end());
         }
         --data_passes;
     }
@@ -256,7 +254,8 @@ std::unordered_map<double, double> fscore(const std::vector<std::vector<double> 
     return ret;
 }
 
-void usage() {
+void usage()
+{
     std::cout << "logistic_regression <training file> <delimiter> <learning rate> <regularization parameter> " <<
         "[<data passes (-1 for convergence)> <batch size>]" << std::endl;
 }
@@ -276,7 +275,9 @@ int main(int argc,
     std::unordered_map<double, std::vector<double> > model;
 
     char *training_file = argv[1];
-    char *delimiter = argv[2];
+
+    assert(strlen(argv[2]) == 1);
+    char delimiter = argv[2][0];
 
     // read training data
     std::cout << "Reading training data ... ";
