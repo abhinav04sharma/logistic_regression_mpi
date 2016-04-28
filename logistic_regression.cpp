@@ -5,6 +5,7 @@
 #include <sstream>
 
 #include <string>
+#include <string.h>
 #include <vector>
 #include <unordered_set>
 #include <unordered_map>
@@ -44,20 +45,18 @@ enum TAGS {
 
 
 void split(std::vector<std::string> &splits,
-           std::string str,
-           const std::string delim)
+           const std::string &str,
+           const char delim)
 {
-    size_t pos = 0;
-    std::string token;
-    while ((pos = str.find(delim)) != std::string::npos) {
-        token = str.substr(0, pos);
-        splits.push_back(token);
-        str.erase(0, pos + delim.length());
+    std::stringstream ss(str);
+    std::string item;
+    while (std::getline(ss, item, delim)) {
+        splits.push_back(item);
     }
 }
 
 bool read_training_data(const char *file_name,
-                        const char *delim,
+                        const char delim,
                         std::vector<std::vector<double> > &training,
                         std::vector<std::vector<double> > &validation,
                         std::unordered_set<double> &label_set)
@@ -73,7 +72,7 @@ bool read_training_data(const char *file_name,
     size_t count = 0;
     while ((read = getline(&line, &len, fp)) != -1) {
         std::vector<std::string> splits;
-        split(splits, std::string(line), std::string(delim));
+        split(splits, std::string(line), delim);
 
         // extract features
         std::vector<double> feat;
@@ -126,7 +125,7 @@ double predict(const std::unordered_map<double, std::vector<double> > &model,
     }
 
     double max_hyp = -1;
-    double max_label;
+    double max_label = -1;
     for (std::unordered_map<double, std::vector<double> >::const_iterator it = model.begin();
          it != model.end();
          ++it)
@@ -138,6 +137,7 @@ double predict(const std::unordered_map<double, std::vector<double> > &model,
         }
     }
     assert(max_hyp != -1);
+    assert(max_label != -1);
 
     return max_label;
 }
@@ -203,7 +203,7 @@ std::vector<double> binary_logistic_regression(std::vector<std::vector<double> >
                 // send batch to workers
                 MPI_Send(&num_examples, sizeof(num_examples), MPI_BYTE, i, BATCH_SIZE, MPI_COMM_WORLD);
                 for (size_t j = 0; j < num_examples; ++j) {
-                    std::vector<double> &feat = *(feats_batch + j);
+                    std::vector<double> feat = *(feats_batch + j);
                     MPI_Send(&feat[0], feat.size(), MPI_DOUBLE, i, BATCH, MPI_COMM_WORLD);
                 }
             }
@@ -336,7 +336,9 @@ int parameter_server(int argc, char *argv[])
     std::unordered_map<double, std::vector<double> > model;
 
     char *training_file = argv[1];
-    char *delimiter = argv[2];
+
+    assert(strlen(argv[2]) == 1);
+    char delimiter = argv[2][0];
 
     // read training data
     std::cout << "Reading training data ... ";
@@ -397,9 +399,8 @@ int worker()
         // receive true label
         double true_label;
         MPI_Recv(&true_label, sizeof(true_label), MPI_BYTE, 0, TRUE_LABEL, MPI_COMM_WORLD, &status);
-        std::cout << "Worker(" << rank << ") " << "True Label: " << true_label << std::endl;
 
-        size_t count_data_passes = 0;
+        int count_data_passes = 0;
         while (count_data_passes < data_passes) {
 
             size_t count_batches = 0;
@@ -425,9 +426,7 @@ int worker()
                 const size_t split_size = weights.size() / num_splits;
 
                 const size_t start = (rank - 1) * split_size;
-                const size_t end = std::min(weights.size(), start + split_size);
-
-                //std::cout << "Worker(" << rank << ") " << "Range: " << start << " - " << end << std::endl;
+                const size_t end = rank == numprocs - 1 ? weights.size() : start + split_size;
 
                 // make a copy of weights
                 std::vector<double> temp_weights(weights.begin() + start, weights.begin() + end);
@@ -445,7 +444,6 @@ int worker()
                         temp_weights[j] = weights[j + start] - learning_rate / batch_size * cst;
                     }
                 }
-
 
                 // send the updated weights for the range
                 size_t temp_weights_size = temp_weights.size();
