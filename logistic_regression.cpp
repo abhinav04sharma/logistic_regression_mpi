@@ -103,6 +103,7 @@ double hypothesis(const std::vector<double> &weights,
                   const std::vector<double> &feats)
 {
     double result = weights[0];
+#pragma omp parallel for reduction(+ : result)
     for (size_t i = 1; i < feats.size(); ++i) {
         result += feats[i] * weights[i];
     }
@@ -151,14 +152,14 @@ double cost(std::vector<std::vector<double> >::const_iterator feats,
             const double true_label)
 {
     double cost = 0;
+#pragma omp parallel for reduction(+ : cost)
     for (size_t i = 0; i < batch_size; ++i) {
-        double label = (*feats)[0] == true_label ? 1 : 0;
+        double label = (*(feats + i))[0] == true_label ? 1 : 0;
         // TODO: can this be simplified?
         if (dimension == 0) 
-            cost += (hypothesis(weights, *feats) - label);
+            cost += (hypothesis(weights, *(feats + i)) - label);
         else
-            cost += (hypothesis(weights, *feats) - label) * (*feats)[dimension];
-        ++feats;
+            cost += (hypothesis(weights, *(feats + i)) - label) * (*(feats + i))[dimension];
     }
     return cost;
 }
@@ -203,7 +204,7 @@ std::vector<double> binary_logistic_regression(std::vector<std::vector<double> >
                 // send batch to workers
                 MPI_Send(&num_examples, sizeof(num_examples), MPI_BYTE, i, BATCH_SIZE, MPI_COMM_WORLD);
                 for (size_t j = 0; j < num_examples; ++j) {
-                    MPI_Send(&feats[batch_begin][0], feats[batch_begin].size(), MPI_DOUBLE, i, BATCH, MPI_COMM_WORLD);
+                    MPI_Send(&feats[batch_begin + j][0], feats[batch_begin + j].size(), MPI_DOUBLE, i, BATCH, MPI_COMM_WORLD);
                 }
             }
 
@@ -273,8 +274,8 @@ void logistic_regression(std::vector<std::vector<double> > &feats,
     }
 
     for (std::unordered_set<double>::const_iterator label_itr = label_set.begin();
-         label_itr != label_set.end();
-         ++label_itr)
+            label_itr != label_set.end();
+            ++label_itr)
     {
         const double label = *label_itr;
         std::cout << std::endl << "Gradient decent for label: " << label << std::endl;
@@ -289,18 +290,20 @@ std::unordered_map<double, double> fscore(const std::vector<std::vector<double> 
     std::unordered_map<double, double> ret(model.size());
     std::unordered_map<double, std::unordered_map<double, double> > confusion_matrix;
 
+#pragma omp parallel for
     for (size_t i = 0; i < validation.size(); ++i) {
-        double pred_label = predict(model, label_set, validation[i]);
-        double true_label = validation[i][0];
-        confusion_matrix[true_label][pred_label] += 1;
+        const double pred_label = predict(model, label_set, validation[i]);
+        const double true_label = validation[i][0];
+#pragma omp atomic
+        ++confusion_matrix[true_label][pred_label];
     }
 
     for (std::unordered_map<double, std::vector<double> >::const_iterator it = model.begin();
          it != model.end();
          ++it)
     {
-        double label = it->first;
-        double tp = confusion_matrix[label][label];
+        const double label = it->first;
+        const double tp = confusion_matrix[label][label];
         double total_gold = 0;
         double total_pred = 0;
         for (std::unordered_set<double>::const_iterator lit = label_set.begin(); lit != label_set.end(); ++lit) {
@@ -308,8 +311,8 @@ std::unordered_map<double, double> fscore(const std::vector<std::vector<double> 
             total_pred += confusion_matrix[*lit][label];
         }
 
-        double precision = tp / total_pred;
-        double recall = tp / total_gold;
+        const double precision = tp / total_pred;
+        const double recall = tp / total_gold;
 
         ret[label] = (2 * precision * recall) / (precision + recall);
     }
@@ -357,6 +360,8 @@ int parameter_server(int argc, char *argv[])
         << "Data Passes: " << data_passes << std::endl
         << "Batch Size: " << batch_size << std::endl
         << "Num Labels: " << label_set.size() << std::endl
+        << "Training Set Size: " << training.size() << std::endl
+        << "Validation Set Size: " << validation.size() << std::endl
         << "**********" << std::endl;
 
     // logistic regression
@@ -427,6 +432,7 @@ int worker()
                 std::vector<double> temp_weights(weights.begin() + start, weights.begin() + end);
 
                 // calculate weights for the range
+#pragma omp parallel for
                 for (size_t j = 0; j < temp_weights.size(); ++j) {
                     // calculate cost for the batch
                     double cst = cost(feats_batch.begin(), weights, batch_size, j + start, true_label);
