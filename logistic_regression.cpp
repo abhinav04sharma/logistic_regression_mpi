@@ -323,7 +323,7 @@ std::unordered_map<double, double> fscore(const std::vector<std::vector<double> 
 void usage()
 {
     std::cout << "logistic_regression <training file> <delimiter> <learning rate> <regularization parameter> " <<
-        "<sync/async> [<data passes> <batch size>]" << std::endl;
+        "<sync/async> <data passes> [<batch size>]" << std::endl;
 }
 
 int parameter_server(int argc, char *argv[])
@@ -344,12 +344,10 @@ int parameter_server(int argc, char *argv[])
     read_training_data(training_file, delimiter, training, validation, label_set);
     std::cout << "[Done]" << std::endl;
 
-    int data_passes = -1;
+    int data_passes = std::stoi(std::string(argv[6]));;
     size_t batch_size = training.size();
-
-    if (argc >= 7)
-        data_passes = std::stoi(std::string(argv[6]));
-    if (argc >= 8)
+    
+    if (argc == 8)
         batch_size = std::stoul(std::string(argv[7]));
 
     std::cout << std::endl
@@ -469,7 +467,7 @@ int main(int argc, char * argv[])
 
     int ret;
 
-    if (argc < 6 || std::string(argv[1]) == std::string("-h")) {
+    if (argc < 7 || std::string(argv[1]) == std::string("-h")) {
         usage();
         return 1;
     }
