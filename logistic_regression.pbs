@@ -14,4 +14,4 @@ WORK_HOME=/home/rcf-proj/jnc/shar736/logistic_regression_mpi
 cd $WORK_HOME
 np=$(cat $PBS_NODEFILE | wc -l)
 
-mpirun -np $np -machinefile $PBS_NODEFILE ./logistic_regression input/train.csv , 0.01 0.01 sync 1 100
+mpirun -np $np -machinefile $PBS_NODEFILE ./logistic_regression sample_input/train.csv , 0.01 0.01 sync 10 100
