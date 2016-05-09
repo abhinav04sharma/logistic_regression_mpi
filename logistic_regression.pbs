@@ -1,0 +1,17 @@
+#!/bin/bash
+#PBS -l nodes=2:ppn=2
+#PBS -l walltime=00:30:00
+#PBS -o logistic_regression.out
+#PBS -A lc_jnc
+#PBS -j oe
+#PBS -N logistic_regression
+
+#source /usr/usc/mpich2/1.5/setup.sh
+source /usr/usc/openmpi/default/setup.sh
+
+WORK_HOME=/home/rcf-proj/jnc/shar736/logistic_regression_mpi
+
+cd $WORK_HOME
+np=$(cat $PBS_NODEFILE | wc -l)
+
+mpirun -np $np -machinefile $PBS_NODEFILE ./logistic_regression input/train.csv , 0.01 0.01 sync 1 100
